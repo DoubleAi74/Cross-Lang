@@ -36,7 +36,7 @@ async function readErrorMessage(response, fallbackMessage) {
   return payload?.error || fallbackMessage;
 }
 
-export default function ImportWizard({ atLimit = false }) {
+export default function ImportWizard({ atLimit = false, importToken }) {
   const router = useRouter();
   const uploadControllerRef = useRef(null);
   const transcriptionControllerRef = useRef(null);
@@ -81,7 +81,7 @@ export default function ImportWizard({ atLimit = false }) {
         return;
       }
 
-      const payload = new Blob([JSON.stringify({ audioKey })], {
+      const payload = new Blob([JSON.stringify({ audioKey, importToken })], {
         type: "application/json",
       });
 
@@ -101,7 +101,7 @@ export default function ImportWizard({ atLimit = false }) {
         URL.revokeObjectURL(audioUrlRef.current);
       }
     };
-  }, []);
+  }, [importToken]);
 
   function setUploadedAudioState(audioKey, fileName) {
     const nextAudioKey = String(audioKey || "");
@@ -124,7 +124,7 @@ export default function ImportWizard({ atLimit = false }) {
       typeof navigator !== "undefined" &&
       typeof navigator.sendBeacon === "function"
     ) {
-      const payload = new Blob([JSON.stringify({ audioKey })], {
+      const payload = new Blob([JSON.stringify({ audioKey, importToken })], {
         type: "application/json",
       });
 
@@ -138,7 +138,7 @@ export default function ImportWizard({ atLimit = false }) {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ audioKey }),
+        body: JSON.stringify({ audioKey, importToken }),
         keepalive: true,
       });
     } catch {
@@ -269,6 +269,7 @@ export default function ImportWizard({ atLimit = false }) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            importToken,
             fileName,
             fileSize: file?.size,
             contentType: file?.type,
@@ -329,6 +330,7 @@ export default function ImportWizard({ atLimit = false }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          importToken,
           audioKey,
           fileName,
         }),
@@ -410,6 +412,7 @@ export default function ImportWizard({ atLimit = false }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          importToken,
           transcript: nextTranscript.text,
           lines: nextTranscript.lines,
         }),
@@ -508,6 +511,7 @@ export default function ImportWizard({ atLimit = false }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          importToken,
           audioKey: uploadedAudioKeyRef.current,
           audioFileName: uploadedFileName || file?.name || null,
           name: name.trim() || buildDefaultName(result),

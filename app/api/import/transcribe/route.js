@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestSessionUser } from "@/lib/auth/request-user";
+import { verifyImportToken } from "@/lib/auth/import-token";
 import { transcribeStoredAudio } from "@/lib/import/transcription";
 import { isOwnedAudioKey } from "@/lib/storage/r2";
 
@@ -7,16 +7,15 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(request) {
-  const sessionUser = await getRequestSessionUser(request);
-
-  if (!sessionUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
     const body = await request.json();
+    const sessionUser = verifyImportToken(body?.importToken);
     const audioKey = String(body?.audioKey || "").trim();
     const fileName = String(body?.fileName || "").trim() || "audio.mp3";
+
+    if (!sessionUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     if (!audioKey) {
       return NextResponse.json({ error: "Audio key is required" }, { status: 400 });

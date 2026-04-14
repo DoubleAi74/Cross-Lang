@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestSessionUser } from "@/lib/auth/request-user";
+import { verifyImportToken } from "@/lib/auth/import-token";
 import { generateStoryJson } from "@/lib/import/story-generation";
 
 export const runtime = "nodejs";
@@ -23,16 +23,15 @@ function toStoryMetadata(story) {
 }
 
 export async function POST(request) {
-  const sessionUser = await getRequestSessionUser(request);
-
-  if (!sessionUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
     const body = await request.json();
+    const sessionUser = verifyImportToken(body?.importToken);
     const transcript = String(body?.transcript || "").trim();
     const lines = Array.isArray(body?.lines) ? body.lines : [];
+
+    if (!sessionUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     if (!transcript) {
       return NextResponse.json({ error: "Transcript is required" }, { status: 400 });

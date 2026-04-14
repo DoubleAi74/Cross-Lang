@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestSessionUser } from "@/lib/auth/request-user";
+import { verifyImportToken } from "@/lib/auth/import-token";
 import { MAX_LISTS_PER_USER } from "@/lib/constants";
 import { extractWordEntries } from "@/lib/import/word-extraction";
 import { serializeListMeta } from "@/lib/lists/serializers";
@@ -10,13 +10,14 @@ import { ValidationError } from "@/lib/lists/validators";
 export const runtime = "nodejs";
 
 export async function POST(request) {
-  const sessionUser = await getRequestSessionUser(request);
-
-  if (!sessionUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
+    const body = await request.json();
+    const sessionUser = verifyImportToken(body?.importToken);
+
+    if (!sessionUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const listCount = await countUserLists(sessionUser.id);
 
     if (listCount >= MAX_LISTS_PER_USER) {
@@ -26,7 +27,6 @@ export async function POST(request) {
       );
     }
 
-    const body = await request.json();
     const audioKey = String(body?.audioKey || "").trim();
     const audioFileName = String(body?.audioFileName || "").trim();
     const name = String(body?.name || "").trim();
