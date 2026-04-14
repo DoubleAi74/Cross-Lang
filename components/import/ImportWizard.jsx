@@ -38,14 +38,19 @@ async function readErrorMessage(response, fallbackMessage) {
 
 export default function ImportWizard({ atLimit = false }) {
   const router = useRouter();
+  const uploadControllerRef = useRef(null);
   const transcriptionControllerRef = useRef(null);
   const generationControllerRef = useRef(null);
   const runIdRef = useRef(0);
   const audioUrlRef = useRef("");
+  const uploadedAudioKeyRef = useRef("");
+  const hasSavedListRef = useRef(false);
 
   const [step, setStep] = useState("upload");
   const [file, setFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState("");
+  const [uploadedFileName, setUploadedFileName] = useState("");
+  const [transcriptPreview, setTranscriptPreview] = useState("");
   const [transcript, setTranscript] = useState(null);
   const [stage, setStage] = useState("idle");
   const [progress, setProgress] = useState(null);
@@ -64,9 +69,33 @@ export default function ImportWizard({ atLimit = false }) {
   );
 
   useEffect(() => {
+    function handlePageHide() {
+      const audioKey = uploadedAudioKeyRef.current;
+
+      if (
+        !audioKey ||
+        hasSavedListRef.current ||
+        typeof navigator === "undefined" ||
+        typeof navigator.sendBeacon !== "function"
+      ) {
+        return;
+      }
+
+      const payload = new Blob([JSON.stringify({ audioKey })], {
+        type: "application/json",
+      });
+
+      navigator.sendBeacon("/api/import/cleanup", payload);
+      uploadedAudioKeyRef.current = "";
+    }
+
+    window.addEventListener("pagehide", handlePageHide);
+
     return () => {
+      uploadControllerRef.current?.abort();
       transcriptionControllerRef.current?.abort();
       generationControllerRef.current?.abort();
+      window.removeEventListener("pagehide", handlePageHide);
 
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
@@ -74,14 +103,60 @@ export default function ImportWizard({ atLimit = false }) {
     };
   }, []);
 
+  function setUploadedAudioState(audioKey, fileName) {
+    const nextAudioKey = String(audioKey || "");
+    uploadedAudioKeyRef.current = nextAudioKey;
+    setUploadedFileName(String(fileName || "").trim());
+  }
+
+  function clearUploadedAudioState() {
+    uploadedAudioKeyRef.current = "";
+    setUploadedFileName("");
+  }
+
+  async function cleanupAudioKey(audioKey, { useBeacon = false } = {}) {
+    if (!audioKey) {
+      return;
+    }
+
+    if (
+      useBeacon &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.sendBeacon === "function"
+    ) {
+      const payload = new Blob([JSON.stringify({ audioKey })], {
+        type: "application/json",
+      });
+
+      navigator.sendBeacon("/api/import/cleanup", payload);
+      return;
+    }
+
+    try {
+      await fetch("/api/import/cleanup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ audioKey }),
+        keepalive: true,
+      });
+    } catch {
+      // Cleanup is best-effort for abandoned uploads.
+    }
+  }
+
   function abortActiveRequests() {
+    uploadControllerRef.current?.abort();
     transcriptionControllerRef.current?.abort();
     generationControllerRef.current?.abort();
+    uploadControllerRef.current = null;
     transcriptionControllerRef.current = null;
     generationControllerRef.current = null;
   }
 
   function resetProcessingState() {
+    setTranscriptPreview("");
     setTranscript(null);
     setStage("idle");
     setProgress(null);
@@ -94,10 +169,19 @@ export default function ImportWizard({ atLimit = false }) {
   }
 
   function handleFileChange(nextFile) {
+    const previousAudioKey = uploadedAudioKeyRef.current;
+
     abortActiveRequests();
     runIdRef.current += 1;
     setStep("upload");
     resetProcessingState();
+    hasSavedListRef.current = false;
+
+    if (previousAudioKey) {
+      clearUploadedAudioState();
+      void cleanupAudioKey(previousAudioKey);
+    }
+
     setFile(nextFile);
 
     if (audioUrlRef.current) {
@@ -110,15 +194,45 @@ export default function ImportWizard({ atLimit = false }) {
     setAudioUrl(nextAudioUrl);
   }
 
-  function handleRetry() {
+  async function handleDiscardImport() {
+    const previousAudioKey = uploadedAudioKeyRef.current;
+
     abortActiveRequests();
     runIdRef.current += 1;
     setStep("upload");
     resetProcessingState();
+    hasSavedListRef.current = false;
+    clearUploadedAudioState();
+    setFile(null);
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = "";
+    }
+
+    setAudioUrl("");
+
+    if (previousAudioKey) {
+      await cleanupAudioKey(previousAudioKey);
+    }
+  }
+
+  async function handleBackToDashboard() {
+    const previousAudioKey = uploadedAudioKeyRef.current;
+
+    abortActiveRequests();
+    runIdRef.current += 1;
+    clearUploadedAudioState();
+
+    if (previousAudioKey && !hasSavedListRef.current) {
+      await cleanupAudioKey(previousAudioKey);
+    }
+
+    router.push("/dashboard");
   }
 
   async function handleStart() {
-    if (!file) {
+    if (!file && !uploadedAudioKeyRef.current) {
       return;
     }
 
@@ -127,11 +241,14 @@ export default function ImportWizard({ atLimit = false }) {
     runIdRef.current = runId;
 
     setStep("processing");
+    setTranscriptPreview("");
     setTranscript(null);
-    setStage("transcribing");
+    setStage("uploading");
     setProgress({
-      stage: "transcribing",
-      message: "Transcribing audio...",
+      stage: "uploading",
+      message: uploadedAudioKeyRef.current
+        ? "Reusing the uploaded audio..."
+        : "Uploading audio to storage...",
       completed: 0,
       total: 0,
     });
@@ -142,39 +259,140 @@ export default function ImportWizard({ atLimit = false }) {
     setName("");
 
     try {
-      const transcribeFormData = new FormData();
-      transcribeFormData.append("file", file);
+      let audioKey = uploadedAudioKeyRef.current;
+      const fileName = uploadedFileName || file?.name || "audio.mp3";
 
-      const transcribeController = new AbortController();
-      transcriptionControllerRef.current = transcribeController;
+      if (!audioKey) {
+        const uploadUrlResponse = await fetch("/api/import/upload-url", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fileName,
+            fileSize: file?.size,
+            contentType: file?.type,
+          }),
+        });
 
-      const transcribeResponse = await fetch("/api/import/transcribe", {
-        method: "POST",
-        body: transcribeFormData,
-        signal: transcribeController.signal,
-      });
+        if (!uploadUrlResponse.ok) {
+          throw new Error(
+            await readErrorMessage(
+              uploadUrlResponse,
+              "Failed to prepare audio upload.",
+            ),
+          );
+        }
 
-      if (!transcribeResponse.ok) {
-        throw new Error(
-          await readErrorMessage(
-            transcribeResponse,
-            "Failed to transcribe the audio file.",
-          ),
-        );
+        const uploadUrlPayload = await uploadUrlResponse.json();
+
+        if (runIdRef.current !== runId) {
+          return;
+        }
+
+        const uploadController = new AbortController();
+        uploadControllerRef.current = uploadController;
+
+        const uploadResponse = await fetch(uploadUrlPayload.uploadUrl, {
+          method: "PUT",
+          headers: uploadUrlPayload.headers || {},
+          body: file,
+          signal: uploadController.signal,
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error("Failed to upload audio to storage.");
+        }
+
+        audioKey = uploadUrlPayload.audioKey;
+        setUploadedAudioState(audioKey, fileName);
       }
-
-      const transcribePayload = await transcribeResponse.json();
 
       if (runIdRef.current !== runId) {
         return;
       }
 
-      const nextTranscript = {
-        text: transcribePayload.transcript,
-        lines: transcribePayload.lines || [],
-      };
+      setStage("transcribing");
+      setProgress({
+        stage: "transcribing",
+        message: "Transcribing audio...",
+        completed: 0,
+        total: 0,
+      });
 
-      setTranscript(nextTranscript);
+      const transcribeController = new AbortController();
+      transcriptionControllerRef.current = transcribeController;
+
+      const streamedTranscribeResponse = await fetch("/api/import/transcribe", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          audioKey,
+          fileName,
+        }),
+        signal: transcribeController.signal,
+      });
+
+      if (!streamedTranscribeResponse.ok) {
+        throw new Error(
+          await readErrorMessage(
+            streamedTranscribeResponse,
+            "Failed to transcribe the audio file.",
+          ),
+        );
+      }
+
+      if (!streamedTranscribeResponse.body) {
+        throw new Error("The transcription stream did not return any data.");
+      }
+
+      let nextTranscript = null;
+
+      await consumeSseStream(
+        streamedTranscribeResponse.body,
+        async ({ event, data }) => {
+          if (runIdRef.current !== runId) {
+            return;
+          }
+
+          if (event === "progress") {
+            setStage(data?.stage || "transcribing");
+            setProgress({
+              stage: data?.stage || "transcribing",
+              message: data?.message || "Transcribing audio...",
+              completed: data?.completed ?? 0,
+              total: data?.total ?? 0,
+            });
+            return;
+          }
+
+          if (event === "delta") {
+            setTranscriptPreview(data?.text || "");
+            return;
+          }
+
+          if (event === "complete") {
+            nextTranscript = {
+              text: data?.transcript || "",
+              lines: Array.isArray(data?.lines) ? data.lines : [],
+            };
+            setTranscript(nextTranscript);
+            setTranscriptPreview(nextTranscript.text);
+            return;
+          }
+
+          if (event === "error") {
+            throw new Error(data?.message || "Transcription failed.");
+          }
+        },
+      );
+
+      if (!nextTranscript) {
+        throw new Error("The transcription stream ended without a final result.");
+      }
+
       setStage("generating");
       setProgress({
         stage: "generating",
@@ -268,6 +486,7 @@ export default function ImportWizard({ atLimit = false }) {
       );
     } finally {
       if (runIdRef.current === runId) {
+        uploadControllerRef.current = null;
         transcriptionControllerRef.current = null;
         generationControllerRef.current = null;
       }
@@ -275,7 +494,7 @@ export default function ImportWizard({ atLimit = false }) {
   }
 
   async function handleSave() {
-    if (!file || !result?.sentences?.length || saving) {
+    if (!uploadedAudioKeyRef.current || !result?.sentences?.length || saving) {
       return;
     }
 
@@ -283,15 +502,18 @@ export default function ImportWizard({ atLimit = false }) {
     setSaveError(null);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("name", name.trim() || buildDefaultName(result));
-      formData.append("sentences", JSON.stringify(result.sentences));
-      formData.append("storyMetadata", JSON.stringify(result.storyMetadata || null));
-
       const response = await fetch("/api/import/save", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          audioKey: uploadedAudioKeyRef.current,
+          audioFileName: uploadedFileName || file?.name || null,
+          name: name.trim() || buildDefaultName(result),
+          sentences: result.sentences,
+          storyMetadata: result.storyMetadata || null,
+        }),
       });
 
       const payload = await response.json().catch(() => null);
@@ -300,6 +522,7 @@ export default function ImportWizard({ atLimit = false }) {
         throw new Error(payload?.error || "Failed to save imported list.");
       }
 
+      hasSavedListRef.current = true;
       dispatchListCreated(payload);
       router.push("/dashboard");
     } catch (saveRequestError) {
@@ -375,12 +598,15 @@ export default function ImportWizard({ atLimit = false }) {
             />
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <Link
-                href="/dashboard"
+              <button
+                type="button"
                 className="inline-flex items-center justify-center rounded-2xl border border-ink/10 bg-white/70 px-5 py-3 text-sm font-semibold text-ink transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white"
+                onClick={() => {
+                  void handleBackToDashboard();
+                }}
               >
                 Back to dashboard
-              </Link>
+              </button>
 
               <PrimaryButton disabled={!file} onClick={handleStart}>
                 Start Import
@@ -409,6 +635,19 @@ export default function ImportWizard({ atLimit = false }) {
                     {partialSentences.length}{" "}
                     {pluralize(partialSentences.length, "sentence")} built
                   </span>
+                </div>
+              </section>
+            ) : null}
+
+            {!transcript && transcriptPreview ? (
+              <section className="glass-panel border border-white/50 p-5 sm:p-6">
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-ink/45">
+                    Live transcript
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm leading-7 text-ink/68">
+                    {transcriptPreview}
+                  </p>
                 </div>
               </section>
             ) : null}
@@ -442,13 +681,21 @@ export default function ImportWizard({ atLimit = false }) {
                   {error}
                 </p>
                 <div className="flex flex-wrap gap-3">
-                  <SecondaryButton onClick={handleRetry}>Retry</SecondaryButton>
-                  <Link
-                    href="/dashboard"
+                  <SecondaryButton onClick={() => void handleStart()}>
+                    Retry
+                  </SecondaryButton>
+                  <SecondaryButton onClick={() => void handleDiscardImport()}>
+                    Choose another file
+                  </SecondaryButton>
+                  <button
+                    type="button"
                     className="inline-flex items-center justify-center rounded-2xl border border-ink/10 bg-white/70 px-5 py-3 text-sm font-semibold text-ink transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white"
+                    onClick={() => {
+                      void handleBackToDashboard();
+                    }}
                   >
                     Back to dashboard
-                  </Link>
+                  </button>
                 </div>
               </div>
             ) : null}
@@ -495,7 +742,10 @@ export default function ImportWizard({ atLimit = false }) {
                   ) : null}
 
                   <div className="flex flex-wrap gap-3">
-                    <SecondaryButton onClick={handleRetry} disabled={saving}>
+                    <SecondaryButton
+                      onClick={() => void handleDiscardImport()}
+                      disabled={saving}
+                    >
                       Import another file
                     </SecondaryButton>
                     <PrimaryButton onClick={handleSave} disabled={saving}>

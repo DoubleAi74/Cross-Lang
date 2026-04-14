@@ -4,8 +4,14 @@ import LoadingSpinner from "@/components/ui/LoadingSpinner";
 
 function getDefaultMessage(stage) {
   switch (stage) {
+    case "uploading":
+      return "Uploading audio to storage...";
+    case "fetching-audio":
+      return "Loading the uploaded audio...";
     case "transcribing":
       return "Transcribing audio...";
+    case "formatting-lines":
+      return "Formatting lyric line breaks...";
     case "generating":
       return "Generating translations...";
     case "complete":
@@ -38,8 +44,8 @@ export default function ImportProgress({ stage = "idle", progress = null }) {
           </div>
           <h2 className="text-3xl leading-tight text-ink">{message}</h2>
           <p className="text-sm leading-6 text-ink/62">
-            The audio is handled in two passes: transcription first, then
-            translation and token extraction chunk by chunk.
+            The audio uploads directly to storage first, then flows through
+            streamed transcription and chunked translation generation.
           </p>
         </div>
 

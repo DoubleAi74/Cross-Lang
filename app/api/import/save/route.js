@@ -4,16 +4,10 @@ import { MAX_LISTS_PER_USER } from "@/lib/constants";
 import { extractWordEntries } from "@/lib/import/word-extraction";
 import { serializeListMeta } from "@/lib/lists/serializers";
 import { countUserLists, createAudioWordList } from "@/lib/lists/service";
-import { uploadAudio } from "@/lib/storage/r2";
+import { isOwnedAudioKey } from "@/lib/storage/r2";
 import { ValidationError } from "@/lib/lists/validators";
 
-function parseJsonField(value, fieldName) {
-  try {
-    return JSON.parse(String(value || ""));
-  } catch {
-    throw new ValidationError(fieldName, `Invalid ${fieldName} JSON`);
-  }
-}
+export const runtime = "nodejs";
 
 export async function POST(request) {
   const session = await auth();
@@ -32,18 +26,12 @@ export async function POST(request) {
       );
     }
 
-    const formData = await request.formData();
-    const file = formData.get("file");
-    const name = String(formData.get("name") || "").trim();
-    const sentences = parseJsonField(formData.get("sentences"), "sentences");
-    const storyMetadata = parseJsonField(
-      formData.get("storyMetadata"),
-      "storyMetadata",
-    );
-
-    if (!file || typeof file.arrayBuffer !== "function") {
-      throw new ValidationError("file", "Audio file is required");
-    }
+    const body = await request.json();
+    const audioKey = String(body?.audioKey || "").trim();
+    const audioFileName = String(body?.audioFileName || "").trim();
+    const name = String(body?.name || "").trim();
+    const sentences = Array.isArray(body?.sentences) ? body.sentences : null;
+    const storyMetadata = body?.storyMetadata || null;
 
     if (!name) {
       throw new ValidationError("name", "Name is required");
@@ -53,38 +41,37 @@ export async function POST(request) {
       throw new ValidationError("name", "Name must be 120 characters or fewer");
     }
 
-    if (!Array.isArray(sentences) || !sentences.length) {
-      throw new ValidationError("sentences", "Sentences are required");
+    if (!audioKey) {
+      throw new ValidationError("audioKey", "Audio key is required");
     }
 
-    let audioKey = null;
-    let warning = null;
+    if (!isOwnedAudioKey(audioKey, session.user.id)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
-    try {
-      const fileBuffer = Buffer.from(await file.arrayBuffer());
-      audioKey = await uploadAudio(fileBuffer, session.user.id, file.name);
-    } catch (error) {
-      warning = error.message || "Audio upload failed; saving list without audio.";
+    if (!Array.isArray(sentences) || !sentences.length) {
+      throw new ValidationError("sentences", "Sentences are required");
     }
 
     const wordEntries = extractWordEntries(sentences);
     const wordList = await createAudioWordList(session.user.id, {
       name,
       audioKey,
-      audioFileName: file.name || null,
+      audioFileName: audioFileName || null,
       sentences,
       storyMetadata,
       wordEntries,
     });
 
     return NextResponse.json(
-      {
-        ...serializeListMeta(wordList),
-        warning,
-      },
+      serializeListMeta(wordList),
       { status: 201 },
     );
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
     if (error instanceof ValidationError) {
       return NextResponse.json(
         { error: error.message, field: error.field },

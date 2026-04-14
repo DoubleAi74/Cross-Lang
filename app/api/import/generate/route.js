@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { generateStoryJson } from "@/lib/import/story-generation";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 function mapProgressPayload(payload) {
   return {
     stage: payload?.mode || "processing",
