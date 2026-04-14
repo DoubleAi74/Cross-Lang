@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { getRequestSessionUser } from "@/lib/auth/request-user";
 import { generateStoryJson } from "@/lib/import/story-generation";
 
 export const runtime = "nodejs";
@@ -23,9 +23,9 @@ function toStoryMetadata(story) {
 }
 
 export async function POST(request) {
-  const session = await auth();
+  const sessionUser = await getRequestSessionUser(request);
 
-  if (!session) {
+  if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

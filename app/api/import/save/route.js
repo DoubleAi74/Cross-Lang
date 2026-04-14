@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { getRequestSessionUser } from "@/lib/auth/request-user";
 import { MAX_LISTS_PER_USER } from "@/lib/constants";
 import { extractWordEntries } from "@/lib/import/word-extraction";
 import { serializeListMeta } from "@/lib/lists/serializers";
@@ -10,14 +10,14 @@ import { ValidationError } from "@/lib/lists/validators";
 export const runtime = "nodejs";
 
 export async function POST(request) {
-  const session = await auth();
+  const sessionUser = await getRequestSessionUser(request);
 
-  if (!session) {
+  if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    const listCount = await countUserLists(session.user.id);
+    const listCount = await countUserLists(sessionUser.id);
 
     if (listCount >= MAX_LISTS_PER_USER) {
       return NextResponse.json(
@@ -45,7 +45,7 @@ export async function POST(request) {
       throw new ValidationError("audioKey", "Audio key is required");
     }
 
-    if (!isOwnedAudioKey(audioKey, session.user.id)) {
+    if (!isOwnedAudioKey(audioKey, sessionUser.id)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -54,7 +54,7 @@ export async function POST(request) {
     }
 
     const wordEntries = extractWordEntries(sentences);
-    const wordList = await createAudioWordList(session.user.id, {
+    const wordList = await createAudioWordList(sessionUser.id, {
       name,
       audioKey,
       audioFileName: audioFileName || null,

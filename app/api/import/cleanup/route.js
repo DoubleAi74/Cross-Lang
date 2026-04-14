@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { getRequestSessionUser } from "@/lib/auth/request-user";
 import { deleteAudioObject, isOwnedAudioKey } from "@/lib/storage/r2";
 
 export const runtime = "nodejs";
 
 export async function POST(request) {
-  const session = await auth();
+  const sessionUser = await getRequestSessionUser(request);
 
-  if (!session) {
+  if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -19,7 +19,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Audio key is required" }, { status: 400 });
     }
 
-    if (!isOwnedAudioKey(audioKey, session.user.id)) {
+    if (!isOwnedAudioKey(audioKey, sessionUser.id)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

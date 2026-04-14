@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { getRequestSessionUser } from "@/lib/auth/request-user";
 import { createSignedAudioUpload } from "@/lib/storage/r2";
 
 export const runtime = "nodejs";
@@ -56,9 +56,9 @@ function inferContentType(fileName) {
 }
 
 export async function POST(request) {
-  const session = await auth();
+  const sessionUser = await getRequestSessionUser(request);
 
-  if (!session) {
+  if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -91,7 +91,7 @@ export async function POST(request) {
     }
 
     const upload = await createSignedAudioUpload({
-      userId: session.user.id,
+      userId: sessionUser.id,
       originalFilename: fileName,
       contentType,
     });
