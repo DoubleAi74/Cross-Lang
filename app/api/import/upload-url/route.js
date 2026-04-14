@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifyImportToken } from "@/lib/auth/import-token";
+import { serializeError } from "@/lib/errors";
 import { createSignedAudioUpload } from "@/lib/storage/r2";
 
 export const runtime = "nodejs";
@@ -56,6 +57,8 @@ function inferContentType(fileName) {
 }
 
 export async function POST(request) {
+  const requestId = crypto.randomUUID();
+
   try {
     const body = await request.json();
     const sessionUser = verifyImportToken(body?.importToken);
@@ -99,14 +102,31 @@ export async function POST(request) {
       audioKey: upload.objectKey,
       uploadUrl: upload.uploadUrl,
       headers: upload.headers,
+      requestId,
     });
   } catch (error) {
     if (error instanceof SyntaxError) {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
+    const serializedError = serializeError(error, "storage_upload");
+
+    console.error("[import/upload-url]", {
+      requestId,
+      ...serializedError,
+      envPresence: {
+        R2_ACCOUNT_ID: Boolean(process.env.R2_ACCOUNT_ID),
+        R2_ACCESS_KEY_ID: Boolean(process.env.R2_ACCESS_KEY_ID),
+        R2_SECRET_ACCESS_KEY: Boolean(process.env.R2_SECRET_ACCESS_KEY),
+        R2_BUCKET_NAME: Boolean(process.env.R2_BUCKET_NAME),
+      },
+    });
+
     return NextResponse.json(
-      { error: error.message || "Failed to prepare audio upload" },
+      {
+        error: error.message || "Failed to prepare audio upload",
+        requestId,
+      },
       { status: 500 },
     );
   }
